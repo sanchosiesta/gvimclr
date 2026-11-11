@@ -26,6 +26,13 @@
 
 ;; --- NAVIGATION HELPERS ---
 
+(defn esc-key? [key ctrl?]
+  (or (= key "Escape")
+      (and ctrl? (or (= key "OemOpenBrackets")
+                     (= key "Oem4")
+                     (= key "BracketLeft")
+                     (= key "OpenBracket")))))
+
 (defn caret->row-col [text caret]
   (let [c (min (count text) (max 0 caret))
         prefix (subs text 0 c)
@@ -255,15 +262,16 @@
         brush-warning (SolidColorBrush/Parse "#fab387")
         brush-command (SolidColorBrush/Parse "#cba6f7")
         brush-dark (SolidColorBrush/Parse "#11111b")
+        brush-transparent (SolidColorBrush/Parse "#00000000")
 
         font-mono (FontFamily. "Consolas, Menlo, DejaVu Sans Mono, monospace")
 
         ;; Window properties
         _ (.set_Title win "gvim [GVimCLR] - ClojureCLR + Avalonia")
-        _ (.set_Width win 960.0)
-        _ (.set_Height win 640.0)
-        _ (.set_MinWidth win 700.0)
-        _ (.set_MinHeight win 440.0)
+        _ (.set_Width win 490.0)
+        _ (.set_Height win 360.0)
+        _ (.set_MinWidth win 320.0)
+        _ (.set_MinHeight win 240.0)
         _ (.set_Background win brush-bg)
 
         ;; Root Layout
@@ -474,7 +482,7 @@
                         ;; Gutter line numbers
                         (.set_Text gutter-text gutter-str)
 
-                        ;; Mode badge
+                        ;; Mode badge & Cursor Shape / Color
                         (case (:mode st)
                           :normal
                           (do
@@ -483,7 +491,15 @@
                             (.set_IsVisible cmd-prompt false)
                             (.set_IsVisible cmd-box false)
                             (.set_IsVisible msg-block true)
-                            (.set_Text msg-block (or (:message st) "-- NORMAL --")))
+                            (.set_Text msg-block (or (:message st) "-- NORMAL --"))
+                            ;; Block cursor in Normal Mode: Green block with dark text
+                            (let [len (count txt)
+                                  c (max 0 (min (dec len) caret))
+                                  c-end (if (pos? len) (min len (inc c)) c)]
+                              (.set_SelectionBrush editor brush-success)
+                              (.set_SelectionForegroundBrush editor brush-dark)
+                              (.set_CaretBrush editor brush-transparent)
+                              (Ui/SelectRange editor c c-end)))
 
                           :insert
                           (do
@@ -492,7 +508,10 @@
                             (.set_IsVisible cmd-prompt false)
                             (.set_IsVisible cmd-box false)
                             (.set_IsVisible msg-block true)
-                            (.set_Text msg-block "-- INSERT --"))
+                            (.set_Text msg-block "-- INSERT --")
+                            ;; Bar cursor in Insert Mode: Sky blue vertical line
+                            (.set_CaretBrush editor brush-accent)
+                            (Ui/SelectRange editor caret caret))
 
                           :command
                           (do
@@ -502,6 +521,14 @@
                             (.set_Text cmd-prompt ":")
                             (.set_IsVisible cmd-box true)
                             (.set_IsVisible msg-block false)
+                            (.set_CaretBrush cmd-box brush-command)
+                            ;; In editor, keep dim block at caret
+                            (let [len (count txt)
+                                  c (max 0 (min (dec len) caret))
+                                  c-end (if (pos? len) (min len (inc c)) c)]
+                              (.set_SelectionBrush editor brush-text-dim)
+                              (.set_SelectionForegroundBrush editor brush-dark)
+                              (Ui/SelectRange editor c c-end))
                             (Ui/FocusElement cmd-box))
 
                           :search
@@ -512,6 +539,14 @@
                             (.set_Text cmd-prompt "/")
                             (.set_IsVisible cmd-box true)
                             (.set_IsVisible msg-block false)
+                            (.set_CaretBrush cmd-box brush-warning)
+                            ;; In editor, keep dim block at caret
+                            (let [len (count txt)
+                                  c (max 0 (min (dec len) caret))
+                                  c-end (if (pos? len) (min len (inc c)) c)]
+                              (.set_SelectionBrush editor brush-text-dim)
+                              (.set_SelectionForegroundBrush editor brush-dark)
+                              (Ui/SelectRange editor c c-end))
                             (Ui/FocusElement cmd-box))
 
                           :visual
@@ -521,7 +556,15 @@
                             (.set_IsVisible cmd-prompt false)
                             (.set_IsVisible cmd-box false)
                             (.set_IsVisible msg-block true)
-                            (.set_Text msg-block "-- VISUAL --")))
+                            (.set_Text msg-block "-- VISUAL --")
+                            ;; Block cursor in Visual Mode: Peach block with dark text
+                            (let [len (count txt)
+                                  c (max 0 (min (dec len) caret))
+                                  c-end (if (pos? len) (min len (inc c)) c)]
+                              (.set_SelectionBrush editor brush-warning)
+                              (.set_SelectionForegroundBrush editor brush-dark)
+                              (.set_CaretBrush editor brush-transparent)
+                              (Ui/SelectRange editor c c-end))))
 
                         ;; File status
                         (.set_Text file-info (str (:filepath st) (when (:dirty? st) " [+]")))
@@ -665,7 +708,7 @@
                     (refresh-ui!)
                     true)))))
 
-          (= key "Escape")
+          (esc-key? key ctrl?)
           (do
             (swap! state-atom assoc :mode :normal :message "-- NORMAL --")
             (.set_Text cmd-box "")
@@ -681,9 +724,9 @@
         (let [st @state-atom
               mode (:mode st)]
           (cond
-            ;; In INSERT mode, Escape returns to NORMAL mode
+            ;; In INSERT mode, Escape or Ctrl-[ returns to NORMAL mode
             (= mode :insert)
-            (if (= key "Escape")
+            (if (esc-key? key ctrl?)
               (do
                 (swap! state-atom assoc :mode :normal :message "-- NORMAL --")
                 (let [caret (Ui/GetCaretIndex editor)]
@@ -692,9 +735,18 @@
                 true)
               false)
 
-            ;; In COMMAND or SEARCH mode, Escape cancels
+            ;; In VISUAL mode, Escape or Ctrl-[ returns to NORMAL mode
+            (= mode :visual)
+            (if (esc-key? key ctrl?)
+              (do
+                (swap! state-atom assoc :mode :normal :message "-- NORMAL --")
+                (refresh-ui!)
+                true)
+              false)
+
+            ;; In COMMAND or SEARCH mode, Escape or Ctrl-[ cancels
             (or (= mode :command) (= mode :search))
-            (if (= key "Escape")
+            (if (esc-key? key ctrl?)
               (do
                 (swap! state-atom assoc :mode :normal :message "-- NORMAL --")
                 (.set_Text cmd-box "")
@@ -709,6 +761,10 @@
                   caret (Ui/GetCaretIndex editor)
                   [row col] (caret->row-col txt caret)]
               (cond
+                ;; Visual mode: v
+                (and (= key "V") (not shift?))
+                (do (swap! state-atom assoc :mode :visual) (refresh-ui!) true)
+
                 ;; Mode switches: i, a, I, A, o, O
                 (and (= key "I") (not shift?))
                 (do (swap! state-atom assoc :mode :insert) (refresh-ui!) true)
