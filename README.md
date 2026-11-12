@@ -44,11 +44,21 @@ It combines the power of Vim modal editing with a sleek graphical interface feat
 | **`x`** | Delete character under cursor |
 | **`dd`** | Delete (cut) current line to clipboard |
 | **`yy`** | Yank (copy) current line to clipboard |
+| **`D`** (Shift+d) | Delete from cursor to end of line |
+| **`Y`** (Shift+y) | Yank from cursor to end of line |
+| **`C`** (Shift+c) | Change to end of line (delete to end and enter Insert mode) |
+| **`S`** (Shift+s) | Change whole line (delete line and enter Insert mode) |
+| **`s`** | Substitute character (delete char and enter Insert mode) |
+| **`J`** (Shift+j) | Join current line with next line |
 | **`p`** | Paste clipboard / buffer below current line |
 | **`P`** | Paste clipboard / buffer above current line |
 | **`u`** | Undo last change |
 | **`Ctrl-R`** | Redo last undone change |
 | **`~`** | Toggle case of character under cursor |
+| **`v`** | Enter Character-wise Visual Mode (` VISUAL `) |
+| **`V`** (Shift+v) | Enter Line-wise Visual Mode (` V-LINE `) |
+| **`Ctrl-V`** | Enter Block-wise Visual Mode (` V-BLOCK `) |
+| **`Ctrl-[`** / **`Esc`** | Exit any mode back to Normal mode |
 | **`i`** | Enter Insert mode before cursor |
 | **`I`** | Enter Insert mode at beginning of line |
 | **`a`** | Enter Insert mode after cursor |
