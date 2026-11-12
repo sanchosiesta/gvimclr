@@ -434,6 +434,7 @@
             (Ui/SetClipboardText cb yanked)
             (swap! state-atom assoc :text new-txt :mode :insert :yank-buffer yanked :dirty? true :message "-- INSERT --")
             (.set_Text editor new-txt)
+            (Ui/FocusElement editor)
             (Ui/SetCaretIndex editor s-start))
 
           :line
@@ -443,6 +444,7 @@
             (Ui/SetClipboardText cb yanked)
             (swap! state-atom assoc :text new-txt :mode :insert :yank-buffer yanked :dirty? true :message "-- INSERT --")
             (.set_Text editor new-txt)
+            (Ui/FocusElement editor)
             (Ui/SetCaretIndex editor s-start))
 
           :block
@@ -453,6 +455,7 @@
             (Ui/SetClipboardText cb yanked)
             (swap! state-atom assoc :text new-txt :mode :insert :yank-buffer yanked :dirty? true :message "-- INSERT --")
             (.set_Text editor new-txt)
+            (Ui/FocusElement editor)
             (Ui/SetCaretIndex editor (row-col->caret new-txt (min r1 r2) (min c1 c2)))))
         (refresh-ui!)
         true)
@@ -514,44 +517,55 @@
     (cond
       ;; Mode switches: i, a, I, A, o, O
       (and (= key "I") (not shift?))
-      (do (swap! state-atom assoc :mode :insert) (refresh-ui!) true)
+      (let [c (Ui/GetCaretIndex editor)]
+        (swap! state-atom assoc :mode :insert :message "-- INSERT --")
+        (Ui/FocusElement editor)
+        (Ui/SelectRange editor c c)
+        (refresh-ui!)
+        true)
 
       (and (= key "I") shift?)
       (let [line-start (first (get-line-bounds txt caret))]
-        (Ui/SetCaretIndex editor line-start)
-        (swap! state-atom assoc :mode :insert)
+        (swap! state-atom assoc :mode :insert :message "-- INSERT --")
+        (Ui/FocusElement editor)
+        (Ui/SelectRange editor line-start line-start)
         (refresh-ui!)
         true)
 
       (and (= key "A") (not shift?))
-      (do
-        (Ui/SetCaretIndex editor (min (count txt) (inc caret)))
-        (swap! state-atom assoc :mode :insert)
+      (let [next-c (min (count txt) (inc caret))]
+        (swap! state-atom assoc :mode :insert :message "-- INSERT --")
+        (Ui/FocusElement editor)
+        (Ui/SelectRange editor next-c next-c)
         (refresh-ui!)
         true)
 
       (and (= key "A") shift?)
       (let [[_ line-end _] (get-line-bounds txt caret)]
-        (Ui/SetCaretIndex editor line-end)
-        (swap! state-atom assoc :mode :insert)
+        (swap! state-atom assoc :mode :insert :message "-- INSERT --")
+        (Ui/FocusElement editor)
+        (Ui/SelectRange editor line-end line-end)
         (refresh-ui!)
         true)
 
       (and (= key "O") (not shift?))
       (let [[_ line-end _] (get-line-bounds txt caret)
-            new-text (str (subs txt 0 line-end) "\n" (subs txt line-end))]
-        (swap! state-atom assoc :text new-text :dirty? true :mode :insert)
+            new-text (str (subs txt 0 line-end) "\n" (subs txt line-end))
+            new-caret (inc line-end)]
+        (swap! state-atom assoc :text new-text :dirty? true :mode :insert :message "-- INSERT --")
         (.set_Text editor new-text)
-        (Ui/SetCaretIndex editor (inc line-end))
+        (Ui/FocusElement editor)
+        (Ui/SelectRange editor new-caret new-caret)
         (refresh-ui!)
         true)
 
       (and (= key "O") shift?)
       (let [[line-start _ _] (get-line-bounds txt caret)
             new-text (str (subs txt 0 line-start) "\n" (subs txt line-start))]
-        (swap! state-atom assoc :text new-text :dirty? true :mode :insert)
+        (swap! state-atom assoc :text new-text :dirty? true :mode :insert :message "-- INSERT --")
         (.set_Text editor new-text)
-        (Ui/SetCaretIndex editor line-start)
+        (Ui/FocusElement editor)
+        (Ui/SelectRange editor line-start line-start)
         (refresh-ui!)
         true)
 
@@ -705,7 +719,9 @@
         (Ui/SetClipboardText cb yanked)
         (swap! state-atom assoc :text text :yank-buffer yanked :dirty? true :mode :insert :message "-- INSERT --")
         (.set_Text editor text)
+        (Ui/FocusElement editor)
         (Ui/SetCaretIndex editor caret)
+        (Ui/SelectRange editor caret caret)
         (refresh-ui!)
         true)
 
@@ -715,7 +731,9 @@
         (Ui/SetClipboardText cb yanked)
         (swap! state-atom assoc :text text :yank-buffer yanked :dirty? true :mode :insert :message "-- INSERT --")
         (.set_Text editor text)
+        (Ui/FocusElement editor)
         (Ui/SetCaretIndex editor caret)
+        (Ui/SelectRange editor caret caret)
         (refresh-ui!)
         true)
 
@@ -724,7 +742,9 @@
       (let [{:keys [text caret]} (delete-char-at-caret txt caret)]
         (swap! state-atom assoc :text text :dirty? true :mode :insert :message "-- INSERT --")
         (.set_Text editor text)
+        (Ui/FocusElement editor)
         (Ui/SetCaretIndex editor caret)
+        (Ui/SelectRange editor caret caret)
         (refresh-ui!)
         true)
 
@@ -1173,8 +1193,7 @@
         (.set_IsVisible msg-block true)
         (.set_Text msg-block "-- INSERT --")
         (.set_IsVisible block-rect false)
-        (.set_CaretBrush editor brush-accent)
-        (Ui/SelectRange editor caret caret))
+        (.set_CaretBrush editor brush-accent))
 
       :visual
       (let [v-mode (:visual-mode st)
@@ -1324,6 +1343,7 @@
 
     (.set_Content win root)
     (refresh-ui!)
+    (Ui/FocusElement editor)
 
     (Ui/OnKeyDown win
       (fn [key shift? ctrl? alt?]
