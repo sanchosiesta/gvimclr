@@ -102,21 +102,54 @@
       {:text (str (subs text 0 caret) toggled (subs text (inc caret)))
        :caret (min (dec (count text)) (inc caret))})))
 
+(defn char-class [c]
+  (cond
+    (System.Char/IsWhiteSpace c) :space
+    (or (System.Char/IsLetterOrDigit c)
+        (= c \_) (= c \-) (= c \?) (= c \!) (= c \*)) :word
+    :else :punct))
+
 (defn next-word-pos [text caret]
-  (let [c (min (count text) (max 0 (inc caret)))
-        rest-text (subs text c)
-        m (re-matcher #"\b\w" rest-text)]
-    (if (.find m)
-      (+ c (.start m))
-      (count text))))
+  (let [len (count text)]
+    (if (>= caret len)
+      len
+      (let [start-class (char-class (nth text caret))]
+        (loop [i caret]
+          (if (>= i len)
+            len
+            (let [cur-class (char-class (nth text i))]
+              (if (= start-class :space)
+                (if (not= cur-class :space)
+                  i
+                  (recur (inc i)))
+                (if (= cur-class start-class)
+                  (recur (inc i))
+                  (loop [j i]
+                    (if (>= j len)
+                      len
+                      (if (not= (char-class (nth text j)) :space)
+                        j
+                        (recur (inc j))))))))))))))
 
 (defn prev-word-pos [text caret]
-  (let [c (min (count text) (max 0 caret))
-        prefix (subs text 0 c)
-        m (re-find #"\b\w[^\w]*$" prefix)]
-    (if m
-      (max 0 (- c (count m)))
-      0)))
+  (let [len (count text)]
+    (if (<= caret 0)
+      0
+      (let [i (loop [idx (dec caret)]
+                (if (<= idx 0)
+                  0
+                  (if (= (char-class (nth text idx)) :space)
+                    (recur (dec idx))
+                    idx)))]
+        (if (<= i 0)
+          0
+          (let [target-class (char-class (nth text i))]
+            (loop [idx i]
+              (if (<= idx 0)
+                0
+                (if (= (char-class (nth text (dec idx))) target-class)
+                  (recur (dec idx))
+                  idx)))))))))
 
 (defn find-matches [text query]
   (if (str/blank? query)
