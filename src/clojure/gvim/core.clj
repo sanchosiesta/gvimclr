@@ -12,7 +12,11 @@
   (atom {:filepath "[No Name]"
          :text ""
          :dirty? false
-         :mode :normal
+         :mode :normal         ;; :normal, :insert, :visual, :command, :search
+         :visual-mode :char    ;; :char, :line, :block
+         :visual-start 0
+         :visual-start-row 1
+         :visual-start-col 1
          :command-input ""
          :search-query ""
          :search-matches []
@@ -24,7 +28,7 @@
          :message "-- NORMAL -- (Press : for command, i for insert, / for search)"
          :quit? false}))
 
-;; --- NAVIGATION HELPERS ---
+;; --- NAVIGATION & TOKEN HELPERS ---
 
 (defn esc-key? [key ctrl?]
   (or (= key "Escape")
@@ -32,6 +36,13 @@
                      (= key "Oem4")
                      (= key "BracketLeft")
                      (= key "OpenBracket")))))
+
+(defn char-class [c]
+  (cond
+    (System.Char/IsWhiteSpace c) :space
+    (or (System.Char/IsLetterOrDigit c)
+        (= c \_) (= c \-) (= c \?) (= c \!) (= c \*)) :word
+    :else :punct))
 
 (defn caret->row-col [text caret]
   (let [c (min (count text) (max 0 caret))
@@ -59,55 +70,14 @@
         after (if next-nl (inc next-nl) end)]
     [start end after]))
 
-(defn delete-current-line [text caret]
-  (let [[start end after] (get-line-bounds text caret)
-        line (subs text start end)
-        new-text (str (subs text 0 start) (subs text after))]
-    {:text new-text
-     :caret (min (count new-text) start)
-     :yanked (str line "\n")}))
+(defn get-visual-line-bounds [text caret1 caret2]
+  (let [c1 (min caret1 caret2)
+        c2 (max caret1 caret2)
+        [start1 _ _] (get-line-bounds text c1)
+        [_ _ after2] (get-line-bounds text c2)]
+    [start1 after2]))
 
-(defn yank-current-line [text caret]
-  (let [[start end _] (get-line-bounds text caret)]
-    (str (subs text start end) "\n")))
-
-(defn paste-below [text caret yanked]
-  (let [[_ _ after] (get-line-bounds text caret)
-        clean-yank (if (str/ends-with? yanked "\n") yanked (str yanked "\n"))
-        new-text (str (subs text 0 after) clean-yank (subs text after))]
-    {:text new-text
-     :caret after}))
-
-(defn paste-above [text caret yanked]
-  (let [[start _ _] (get-line-bounds text caret)
-        clean-yank (if (str/ends-with? yanked "\n") yanked (str yanked "\n"))
-        new-text (str (subs text 0 start) clean-yank (subs text start))]
-    {:text new-text
-     :caret start}))
-
-(defn delete-char-at-caret [text caret]
-  (if (or (empty? text) (>= caret (count text)))
-    {:text text :caret caret}
-    {:text (str (subs text 0 caret) (subs text (inc caret)))
-     :caret (min (dec (count text)) caret)}))
-
-(defn toggle-case-char [text caret]
-  (if (or (empty? text) (>= caret (count text)))
-    {:text text :caret caret}
-    (let [ch (nth text caret)
-          ch-str (str ch)
-          toggled (if (= ch-str (str/upper-case ch-str))
-                    (str/lower-case ch-str)
-                    (str/upper-case ch-str))]
-      {:text (str (subs text 0 caret) toggled (subs text (inc caret)))
-       :caret (min (dec (count text)) (inc caret))})))
-
-(defn char-class [c]
-  (cond
-    (System.Char/IsWhiteSpace c) :space
-    (or (System.Char/IsLetterOrDigit c)
-        (= c \_) (= c \-) (= c \?) (= c \!) (= c \*)) :word
-    :else :punct))
+;; --- WORD MOTIONS (w / b) ---
 
 (defn next-word-pos [text caret]
   (let [len (count text)]
@@ -150,6 +120,112 @@
                 (if (= (char-class (nth text (dec idx))) target-class)
                   (recur (dec idx))
                   idx)))))))))
+
+;; --- EDITING OPERATIONS (dd, yy, D, Y, J, p, P, x, ~) ---
+
+(defn delete-current-line [text caret]
+  (let [[start end after] (get-line-bounds text caret)
+        line (subs text start end)
+        new-text (str (subs text 0 start) (subs text after))]
+    {:text new-text
+     :caret (min (count new-text) start)
+     :yanked (str line "\n")}))
+
+(defn yank-current-line [text caret]
+  (let [[start end _] (get-line-bounds text caret)]
+    (str (subs text start end) "\n")))
+
+(defn delete-to-end-of-line [text caret]
+  (let [c (min (count text) (max 0 caret))
+        next-nl (str/index-of text "\n" c)
+        end (if next-nl next-nl (count text))
+        yanked (subs text c end)
+        new-text (str (subs text 0 c) (subs text end))]
+    {:text new-text
+     :caret (max 0 (min (dec (count new-text)) c))
+     :yanked yanked}))
+
+(defn yank-to-end-of-line [text caret]
+  (let [c (min (count text) (max 0 caret))
+        next-nl (str/index-of text "\n" c)
+        end (if next-nl next-nl (count text))]
+    (subs text c end)))
+
+(defn join-next-line [text caret]
+  (let [c (min (count text) (max 0 caret))
+        next-nl (str/index-of text "\n" c)]
+    (if-not next-nl
+      {:text text :caret caret}
+      (let [after-nl (inc next-nl)
+            after-nl-end (let [nxt (str/index-of text "\n" after-nl)]
+                           (if nxt nxt (count text)))
+            next-line (subs text after-nl after-nl-end)
+            trimmed-next (str/triml next-line)
+            new-text (str (subs text 0 next-nl) " " trimmed-next (subs text after-nl-end))]
+        {:text new-text :caret next-nl}))))
+
+(defn paste-below [text caret yanked]
+  (let [[_ _ after] (get-line-bounds text caret)
+        clean-yank (if (str/ends-with? yanked "\n") yanked (str yanked "\n"))
+        new-text (str (subs text 0 after) clean-yank (subs text after))]
+    {:text new-text
+     :caret after}))
+
+(defn paste-above [text caret yanked]
+  (let [[start _ _] (get-line-bounds text caret)
+        clean-yank (if (str/ends-with? yanked "\n") yanked (str yanked "\n"))
+        new-text (str (subs text 0 start) clean-yank (subs text start))]
+    {:text new-text
+     :caret start}))
+
+(defn delete-char-at-caret [text caret]
+  (if (or (empty? text) (>= caret (count text)))
+    {:text text :caret caret}
+    {:text (str (subs text 0 caret) (subs text (inc caret)))
+     :caret (min (dec (count text)) caret)}))
+
+(defn toggle-case-char [text caret]
+  (if (or (empty? text) (>= caret (count text)))
+    {:text text :caret caret}
+    (let [ch (nth text caret)
+          ch-str (str ch)
+          toggled (if (= ch-str (str/upper-case ch-str))
+                    (str/lower-case ch-str)
+                    (str/upper-case ch-str))]
+      {:text (str (subs text 0 caret) toggled (subs text (inc caret)))
+       :caret (min (dec (count text)) (inc caret))})))
+
+;; --- BLOCK-WISE (VISUAL BLOCK) HELPERS ---
+
+(defn extract-block [text r1 c1 r2 c2]
+  (let [lines (str/split text #"\r?\n" -1)
+        min-r (dec (min r1 r2))
+        max-r (dec (max r1 r2))
+        min-c (dec (min c1 c2))
+        max-c (max c1 c2)]
+    (->> (subvec lines min-r (inc max-r))
+         (mapv (fn [line]
+                 (let [l (count line)]
+                   (if (> min-c l)
+                     ""
+                     (subs line min-c (min l max-c))))))
+         (str/join "\n"))))
+
+(defn delete-block [text r1 c1 r2 c2]
+  (let [lines (str/split text #"\r?\n" -1)
+        min-r (dec (min r1 r2))
+        max-r (dec (max r1 r2))
+        min-c (dec (min c1 c2))
+        max-c (max c1 c2)
+        new-lines (mapv (fn [i line]
+                          (if (and (>= i min-r) (<= i max-r))
+                            (let [l (count line)]
+                              (str (subs line 0 (min l min-c))
+                                   (if (> l max-c) (subs line max-c) "")))
+                            line))
+                        (range (count lines))
+                        lines)]
+    (str/join "\n" new-lines)))
 
 (defn find-matches [text query]
   (if (str/blank? query)
@@ -259,9 +335,9 @@
       (or (= trimmed "h") (= trimmed "help"))
       (assoc state :mode :normal
                    :command-input ""
-                   :message "GVimCLR: h/j/k/l: Nav • i/a: Insert • y/d/p: Yank/Del/Put • :w :q :e /find")
+                   :message "GVimCLR: h/j/k/l: Nav • v/V/^V: Visual • y/d/D/Y/C/S/s/J • :w :q :e /find")
 
-      ;; Unknown
+      ;; Unknown command
       :else
       (assoc state :mode :normal
                    :command-input ""
@@ -273,7 +349,7 @@
   (let [win (Window.)
         cb (.get_Clipboard win)
 
-        ;; Initial text
+        ;; Initial buffer content
         init-text (str ";; Welcome to GVimCLR - ClojureCLR + Avalonia\n"
                        ";; A native Vim clone running on Linux (.NET 10)\n"
                        "\n"
@@ -283,7 +359,7 @@
                        "(println (greet \"ClojureCLR\"))\n")
         _ (swap! state-atom assoc :text init-text :filepath "[No Name]")
 
-        ;; Colors (Catppuccin Mocha theme)
+        ;; Theme colors (Catppuccin Mocha theme)
         brush-bg (SolidColorBrush/Parse "#1e1e2e")
         brush-gutter (SolidColorBrush/Parse "#181825")
         brush-toolbar (SolidColorBrush/Parse "#282a36")
@@ -301,8 +377,8 @@
 
         ;; Window properties
         _ (.set_Title win "gvim [GVimCLR] - ClojureCLR + Avalonia")
-        _ (.set_Width win 490.0)
-        _ (.set_Height win 360.0)
+        _ (.set_Width win 500.0)
+        _ (.set_Height win 370.0)
         _ (.set_MinWidth win 320.0)
         _ (.set_MinHeight win 240.0)
         _ (.set_Background win brush-bg)
@@ -340,7 +416,7 @@
         _ (.set_Content btn-undo "↩️ Undo [u]")
         _ (.set_Background btn-undo brush-toolbar)
         _ (.set_Foreground btn-undo brush-text-main)
-        _ (.set_Margin btn-undo (Thickness. 8.0 4.0 2.0 4.0))
+        _ (.set_Margin btn-undo (Thickness. 6.0 4.0 2.0 4.0))
 
         btn-redo (Button.)
         _ (.set_Content btn-redo "↪️ Redo [^R]")
@@ -352,7 +428,7 @@
         _ (.set_Content btn-cut "✂️ Cut [dd]")
         _ (.set_Background btn-cut brush-toolbar)
         _ (.set_Foreground btn-cut brush-text-main)
-        _ (.set_Margin btn-cut (Thickness. 8.0 4.0 2.0 4.0))
+        _ (.set_Margin btn-cut (Thickness. 6.0 4.0 2.0 4.0))
 
         btn-yank (Button.)
         _ (.set_Content btn-yank "📋 Copy [yy]")
@@ -387,13 +463,13 @@
 
         mode-badge (Border.)
         _ (.set_Background mode-badge brush-success)
-        _ (.set_Padding mode-badge (Thickness. 10.0 3.0 10.0 3.0))
+        _ (.set_Padding mode-badge (Thickness. 8.0 2.0 8.0 2.0))
         _ (DockPanel/SetDock mode-badge Dock/Left)
 
         mode-text (TextBlock.)
         _ (.set_Text mode-text " NORMAL ")
         _ (.set_FontWeight mode-text FontWeight/Bold)
-        _ (.set_FontSize mode-text 12.0)
+        _ (.set_FontSize mode-text 11.0)
         _ (.set_Foreground mode-text brush-dark)
         _ (.set_Child mode-badge mode-text)
 
@@ -401,14 +477,14 @@
         _ (.set_Text file-info "[No Name]")
         _ (.set_Foreground file-info brush-text-main)
         _ (.set_VerticalAlignment file-info VerticalAlignment/Center)
-        _ (.set_Margin file-info (Thickness. 10.0 0.0 0.0 0.0))
+        _ (.set_Margin file-info (Thickness. 8.0 0.0 0.0 0.0))
         _ (DockPanel/SetDock file-info Dock/Left)
 
         pos-info (TextBlock.)
-        _ (.set_Text pos-info "ln 1, col 1 • 100% • 7 lines")
+        _ (.set_Text pos-info "ln 1, col 1 • 7L")
         _ (.set_Foreground pos-info brush-text-dim)
         _ (.set_VerticalAlignment pos-info VerticalAlignment/Center)
-        _ (.set_Margin pos-info (Thickness. 0.0 0.0 10.0 0.0))
+        _ (.set_Margin pos-info (Thickness. 0.0 0.0 8.0 0.0))
         _ (.set_HorizontalAlignment pos-info HorizontalAlignment/Right)
         _ (DockPanel/SetDock pos-info Dock/Right)
 
@@ -420,8 +496,8 @@
         ;; Command & Message Line
         cmdline (DockPanel.)
         _ (.set_Background cmdline brush-dark)
-        _ (.set_Height cmdline 28.0)
-        _ (.set_Margin cmdline (Thickness. 6.0 2.0 6.0 2.0))
+        _ (.set_Height cmdline 26.0)
+        _ (.set_Margin cmdline (Thickness. 4.0 1.0 4.0 1.0))
 
         cmd-prompt (TextBlock.)
         _ (.set_Text cmd-prompt ":")
@@ -459,7 +535,7 @@
         ;; --- MAIN EDITOR AREA (Gutter + Text Editor) ---
         editor-grid (Grid.)
         _ (doto (.get_ColumnDefinitions editor-grid)
-            (.Add (ColumnDefinition. (GridLength. 54.0 GridUnitType/Pixel)))
+            (.Add (ColumnDefinition. (GridLength. 48.0 GridUnitType/Pixel)))
             (.Add (ColumnDefinition. (GridLength. 1.0 GridUnitType/Star))))
 
         ;; Gutter for line numbers
@@ -472,7 +548,7 @@
         _ (.set_FontSize gutter-text 14.0)
         _ (.set_Foreground gutter-text brush-text-dim)
         _ (.set_TextAlignment gutter-text TextAlignment/Right)
-        _ (.set_Margin gutter-text (Thickness. 4.0 6.0 8.0 6.0))
+        _ (.set_Margin gutter-text (Thickness. 2.0 4.0 6.0 4.0))
         _ (.set_Child gutter-border gutter-text)
 
         ;; Main Text Box
@@ -510,12 +586,16 @@
                             gutter-str (str/join "\n" (range 1 (inc line-count)))
                             caret (Ui/GetCaretIndex editor)
                             [row col] (caret->row-col txt caret)
-                            pct (int (if (zero? (count txt)) 100 (* 100 (/ (float caret) (float (max 1 (count txt)))))))]
+                            pct (int (if (zero? (count txt)) 100 (* 100 (/ (float caret) (float (max 1 (count txt)))))))
+                            len (count txt)
+                            c (max 0 (min (dec len) caret))
+                            ch (when (< c len) (nth txt c))
+                            on-newline? (or (nil? ch) (= ch \newline) (= ch \return))]
 
                         ;; Gutter line numbers
                         (.set_Text gutter-text gutter-str)
 
-                        ;; Mode badge & Cursor Shape / Color
+                        ;; Mode badge & Cursor shape / color
                         (case (:mode st)
                           :normal
                           (do
@@ -525,14 +605,19 @@
                             (.set_IsVisible cmd-box false)
                             (.set_IsVisible msg-block true)
                             (.set_Text msg-block (or (:message st) "-- NORMAL --"))
-                            ;; Block cursor in Normal Mode: Green block with dark text
-                            (let [len (count txt)
-                                  c (max 0 (min (dec len) caret))
-                                  c-end (if (pos? len) (min len (inc c)) c)]
-                              (.set_SelectionBrush editor brush-success)
-                              (.set_SelectionForegroundBrush editor brush-dark)
-                              (.set_CaretBrush editor brush-transparent)
-                              (Ui/SelectRange editor c c-end)))
+                            (if on-newline?
+                              ;; On empty/blank lines: Bright green caret bar at empty line
+                              (do
+                                (.set_CaretBrush editor brush-success)
+                                (Ui/SetCaretIndex editor (min len caret))
+                                (Ui/SelectRange editor (min len caret) (min len caret)))
+                              ;; On character: Solid green block selection with dark text
+                              (do
+                                (.set_SelectionBrush editor brush-success)
+                                (.set_SelectionForegroundBrush editor brush-dark)
+                                (.set_CaretBrush editor brush-success)
+                                (Ui/SetCaretIndex editor c)
+                                (Ui/SelectRange editor c (min len (inc c))))))
 
                           :insert
                           (do
@@ -542,9 +627,46 @@
                             (.set_IsVisible cmd-box false)
                             (.set_IsVisible msg-block true)
                             (.set_Text msg-block "-- INSERT --")
-                            ;; Bar cursor in Insert Mode: Sky blue vertical line
+                            ;; Bar cursor in Insert mode: Sky blue vertical line
                             (.set_CaretBrush editor brush-accent)
                             (Ui/SelectRange editor caret caret))
+
+                          :visual
+                          (let [v-mode (:visual-mode st)
+                                v-start (or (:visual-start st) caret)]
+                            (.set_Background mode-badge brush-warning)
+                            (.set_IsVisible cmd-prompt false)
+                            (.set_IsVisible cmd-box false)
+                            (.set_IsVisible msg-block true)
+                            (.set_SelectionBrush editor brush-warning)
+                            (.set_SelectionForegroundBrush editor brush-dark)
+                            (case v-mode
+                              :char
+                              (let [s-start (min v-start caret)
+                                    s-end (min len (inc (max v-start caret)))]
+                                (.set_Text mode-text " VISUAL ")
+                                (.set_Text msg-block (str "-- VISUAL (" (- s-end s-start) "c) --"))
+                                (Ui/SelectRange editor s-start s-end))
+
+                              :line
+                              (let [[s-start s-end] (get-visual-line-bounds txt v-start caret)
+                                    [r1 _] (caret->row-col txt v-start)
+                                    [r2 _] (caret->row-col txt caret)
+                                    lines-sel (inc (Math/Abs (- r1 r2)))]
+                                (.set_Text mode-text " V-LINE ")
+                                (.set_Text msg-block (str "-- VISUAL LINE (" lines-sel "L) --"))
+                                (Ui/SelectRange editor s-start s-end))
+
+                              :block
+                              (let [[r1 c1] (caret->row-col txt v-start)
+                                    [r2 c2] [row col]
+                                    h (inc (Math/Abs (- r1 r2)))
+                                    w (inc (Math/Abs (- c1 c2)))
+                                    s-start (row-col->caret txt (min r1 r2) (min c1 c2))
+                                    s-end (row-col->caret txt (max r1 r2) (max c1 c2))]
+                                (.set_Text mode-text " V-BLOCK ")
+                                (.set_Text msg-block (str "-- VISUAL BLOCK (" h "x" w ") --"))
+                                (Ui/SelectRange editor s-start (min len (inc s-end))))))
 
                           :command
                           (do
@@ -555,13 +677,6 @@
                             (.set_IsVisible cmd-box true)
                             (.set_IsVisible msg-block false)
                             (.set_CaretBrush cmd-box brush-command)
-                            ;; In editor, keep dim block at caret
-                            (let [len (count txt)
-                                  c (max 0 (min (dec len) caret))
-                                  c-end (if (pos? len) (min len (inc c)) c)]
-                              (.set_SelectionBrush editor brush-text-dim)
-                              (.set_SelectionForegroundBrush editor brush-dark)
-                              (Ui/SelectRange editor c c-end))
                             (Ui/FocusElement cmd-box))
 
                           :search
@@ -573,31 +688,7 @@
                             (.set_IsVisible cmd-box true)
                             (.set_IsVisible msg-block false)
                             (.set_CaretBrush cmd-box brush-warning)
-                            ;; In editor, keep dim block at caret
-                            (let [len (count txt)
-                                  c (max 0 (min (dec len) caret))
-                                  c-end (if (pos? len) (min len (inc c)) c)]
-                              (.set_SelectionBrush editor brush-text-dim)
-                              (.set_SelectionForegroundBrush editor brush-dark)
-                              (Ui/SelectRange editor c c-end))
-                            (Ui/FocusElement cmd-box))
-
-                          :visual
-                          (do
-                            (.set_Background mode-badge brush-warning)
-                            (.set_Text mode-text " VISUAL ")
-                            (.set_IsVisible cmd-prompt false)
-                            (.set_IsVisible cmd-box false)
-                            (.set_IsVisible msg-block true)
-                            (.set_Text msg-block "-- VISUAL --")
-                            ;; Block cursor in Visual Mode: Peach block with dark text
-                            (let [len (count txt)
-                                  c (max 0 (min (dec len) caret))
-                                  c-end (if (pos? len) (min len (inc c)) c)]
-                              (.set_SelectionBrush editor brush-warning)
-                              (.set_SelectionForegroundBrush editor brush-dark)
-                              (.set_CaretBrush editor brush-transparent)
-                              (Ui/SelectRange editor c c-end))))
+                            (Ui/FocusElement cmd-box)))
 
                         ;; File status
                         (.set_Text file-info (str (:filepath st) (when (:dirty? st) " [+]")))
@@ -606,7 +697,7 @@
                         (.set_Title win (str "gvim - " (:filepath st) (when (:dirty? st) " [+]") " - GVimCLR"))
 
                         ;; Position
-                        (.set_Text pos-info (str "ln " row ", col " col " • " pct "% • " line-count " lines"))
+                        (.set_Text pos-info (str "ln " row ", col " col " • " line-count "L"))
 
                         ;; Handle quit
                         (when (:quit? st)
@@ -768,16 +859,168 @@
                 true)
               false)
 
-            ;; In VISUAL mode, Escape or Ctrl-[ returns to NORMAL mode
+            ;; In VISUAL mode (char, line, block)
             (= mode :visual)
-            (if (esc-key? key ctrl?)
-              (do
-                (swap! state-atom assoc :mode :normal :message "-- NORMAL --")
+            (cond
+              ;; Escape or Ctrl-[ or toggling v/V/^V cancels visual mode
+              (esc-key? key ctrl?)
+              (do (swap! state-atom assoc :mode :normal :message "-- NORMAL --") (refresh-ui!) true)
+
+              ;; y (Yank visual selection)
+              (= key "Y")
+              (let [txt (:text st)
+                    caret (Ui/GetCaretIndex editor)
+                    v-mode (:visual-mode st)
+                    v-start (:visual-start st)]
+                (case v-mode
+                  :char
+                  (let [s-start (min v-start caret)
+                        s-end (min (count txt) (inc (max v-start caret)))
+                        yanked (subs txt s-start s-end)]
+                    (Ui/SetClipboardText cb yanked)
+                    (swap! state-atom assoc :mode :normal :yank-buffer yanked :message (str (count yanked) " chars yanked")))
+
+                  :line
+                  (let [[s-start s-end] (get-visual-line-bounds txt v-start caret)
+                        yanked (subs txt s-start s-end)]
+                    (Ui/SetClipboardText cb yanked)
+                    (swap! state-atom assoc :mode :normal :yank-buffer yanked :message (str (count (str/split-lines yanked)) " lines yanked")))
+
+                  :block
+                  (let [[r1 c1] (caret->row-col txt v-start)
+                        [r2 c2] (caret->row-col txt caret)
+                        yanked (extract-block txt r1 c1 r2 c2)]
+                    (Ui/SetClipboardText cb yanked)
+                    (swap! state-atom assoc :mode :normal :yank-buffer yanked :message "Block yanked")))
                 (refresh-ui!)
                 true)
-              false)
 
-            ;; In COMMAND or SEARCH mode, Escape or Ctrl-[ cancels
+              ;; d or x (Delete visual selection)
+              (or (= key "D") (= key "X") (= key "Delete"))
+              (let [txt (:text st)
+                    caret (Ui/GetCaretIndex editor)
+                    v-mode (:visual-mode st)
+                    v-start (:visual-start st)]
+                (case v-mode
+                  :char
+                  (let [s-start (min v-start caret)
+                        s-end (min (count txt) (inc (max v-start caret)))
+                        yanked (subs txt s-start s-end)
+                        new-txt (str (subs txt 0 s-start) (subs txt s-end))]
+                    (Ui/SetClipboardText cb yanked)
+                    (swap! state-atom assoc :text new-txt :mode :normal :yank-buffer yanked :dirty? true :message (str (count yanked) " chars deleted"))
+                    (.set_Text editor new-txt)
+                    (Ui/SetCaretIndex editor s-start))
+
+                  :line
+                  (let [[s-start s-end] (get-visual-line-bounds txt v-start caret)
+                        yanked (subs txt s-start s-end)
+                        new-txt (str (subs txt 0 s-start) (subs txt s-end))]
+                    (Ui/SetClipboardText cb yanked)
+                    (swap! state-atom assoc :text new-txt :mode :normal :yank-buffer yanked :dirty? true :message (str (count (str/split-lines yanked)) " lines deleted"))
+                    (.set_Text editor new-txt)
+                    (Ui/SetCaretIndex editor s-start))
+
+                  :block
+                  (let [[r1 c1] (caret->row-col txt v-start)
+                        [r2 c2] (caret->row-col txt caret)
+                        yanked (extract-block txt r1 c1 r2 c2)
+                        new-txt (delete-block txt r1 c1 r2 c2)]
+                    (Ui/SetClipboardText cb yanked)
+                    (swap! state-atom assoc :text new-txt :mode :normal :yank-buffer yanked :dirty? true :message "Block deleted")
+                    (.set_Text editor new-txt)
+                    (Ui/SetCaretIndex editor (row-col->caret new-txt (min r1 r2) (min c1 c2)))))
+                (refresh-ui!)
+                true)
+
+              ;; c (Change visual selection)
+              (= key "C")
+              (let [txt (:text st)
+                    caret (Ui/GetCaretIndex editor)
+                    v-mode (:visual-mode st)
+                    v-start (:visual-start st)]
+                (case v-mode
+                  :char
+                  (let [s-start (min v-start caret)
+                        s-end (min (count txt) (inc (max v-start caret)))
+                        yanked (subs txt s-start s-end)
+                        new-txt (str (subs txt 0 s-start) (subs txt s-end))]
+                    (Ui/SetClipboardText cb yanked)
+                    (swap! state-atom assoc :text new-txt :mode :insert :yank-buffer yanked :dirty? true :message "-- INSERT --")
+                    (.set_Text editor new-txt)
+                    (Ui/SetCaretIndex editor s-start))
+
+                  :line
+                  (let [[s-start s-end] (get-visual-line-bounds txt v-start caret)
+                        yanked (subs txt s-start s-end)
+                        new-txt (str (subs txt 0 s-start) "\n" (subs txt s-end))]
+                    (Ui/SetClipboardText cb yanked)
+                    (swap! state-atom assoc :text new-txt :mode :insert :yank-buffer yanked :dirty? true :message "-- INSERT --")
+                    (.set_Text editor new-txt)
+                    (Ui/SetCaretIndex editor s-start))
+
+                  :block
+                  (let [[r1 c1] (caret->row-col txt v-start)
+                        [r2 c2] (caret->row-col txt caret)
+                        yanked (extract-block txt r1 c1 r2 c2)
+                        new-txt (delete-block txt r1 c1 r2 c2)]
+                    (Ui/SetClipboardText cb yanked)
+                    (swap! state-atom assoc :text new-txt :mode :insert :yank-buffer yanked :dirty? true :message "-- INSERT --")
+                    (.set_Text editor new-txt)
+                    (Ui/SetCaretIndex editor (row-col->caret new-txt (min r1 r2) (min c1 c2)))))
+                (refresh-ui!)
+                true)
+
+              ;; Motions in visual mode expand selection:
+              (or (= key "H") (= key "Left"))
+              (let [caret (Ui/GetCaretIndex editor)
+                    [start _ _] (get-line-bounds (:text st) caret)]
+                (when (> caret start)
+                  (Ui/SetCaretIndex editor (dec caret))
+                  (refresh-ui!))
+                true)
+
+              (or (= key "L") (= key "Right"))
+              (let [caret (Ui/GetCaretIndex editor)
+                    [_ end _] (get-line-bounds (:text st) caret)]
+                (when (< caret end)
+                  (Ui/SetCaretIndex editor (inc caret))
+                  (refresh-ui!))
+                true)
+
+              (or (= key "J") (= key "Down"))
+              (let [caret (Ui/GetCaretIndex editor)
+                    [row col] (caret->row-col (:text st) caret)
+                    new-caret (row-col->caret (:text st) (inc row) col)]
+                (Ui/SetCaretIndex editor new-caret)
+                (refresh-ui!)
+                true)
+
+              (or (= key "K") (= key "Up"))
+              (let [caret (Ui/GetCaretIndex editor)
+                    [row col] (caret->row-col (:text st) caret)
+                    new-caret (row-col->caret (:text st) (max 1 (dec row)) col)]
+                (Ui/SetCaretIndex editor new-caret)
+                (refresh-ui!)
+                true)
+
+              (= key "W")
+              (let [caret (Ui/GetCaretIndex editor)
+                    new-caret (next-word-pos (:text st) caret)]
+                (Ui/SetCaretIndex editor new-caret)
+                (refresh-ui!)
+                true)
+
+              (= key "B")
+              (let [caret (Ui/GetCaretIndex editor)
+                    new-caret (prev-word-pos (:text st) caret)]
+                (Ui/SetCaretIndex editor new-caret)
+                (refresh-ui!)
+                true)
+
+              :else false)
+
+            ;; In COMMAND or SEARCH mode, Escape cancels
             (or (= mode :command) (= mode :search))
             (if (esc-key? key ctrl?)
               (do
@@ -794,10 +1037,6 @@
                   caret (Ui/GetCaretIndex editor)
                   [row col] (caret->row-col txt caret)]
               (cond
-                ;; Visual mode: v
-                (and (= key "V") (not shift?))
-                (do (swap! state-atom assoc :mode :visual) (refresh-ui!) true)
-
                 ;; Mode switches: i, a, I, A, o, O
                 (and (= key "I") (not shift?))
                 (do (swap! state-atom assoc :mode :insert) (refresh-ui!) true)
@@ -841,6 +1080,26 @@
                   (refresh-ui!)
                   true)
 
+                ;; Visual Modes: v (char), V (line), Ctrl-V (block)
+                (and (= key "V") (not shift?) (not ctrl?))
+                (do
+                  (swap! state-atom assoc :mode :visual :visual-mode :char :visual-start caret)
+                  (refresh-ui!)
+                  true)
+
+                (and (= key "V") shift? (not ctrl?))
+                (do
+                  (swap! state-atom assoc :mode :visual :visual-mode :line :visual-start caret)
+                  (refresh-ui!)
+                  true)
+
+                (and (= key "V") ctrl?)
+                (do
+                  (swap! state-atom assoc :mode :visual :visual-mode :block :visual-start caret
+                                          :visual-start-row row :visual-start-col col)
+                  (refresh-ui!)
+                  true)
+
                 ;; Command line mode: :
                 (or (= key "OemSemicolon") (= key "Colon") (and (= key "Oem1") shift?))
                 (do
@@ -873,11 +1132,20 @@
                   true)
 
                 (or (= key "J") (= key "Down"))
-                (let [target-row (inc row)
-                      new-caret (row-col->caret txt target-row col)]
-                  (Ui/SetCaretIndex editor new-caret)
-                  (refresh-ui!)
-                  true)
+                (if (and (= key "J") shift?)
+                  ;; Shift+J: Join next line!
+                  (let [{:keys [text caret]} (join-next-line txt caret)]
+                    (swap! state-atom assoc :text text :dirty? true :message "Joined lines")
+                    (.set_Text editor text)
+                    (Ui/SetCaretIndex editor caret)
+                    (refresh-ui!)
+                    true)
+                  ;; Normal j: down
+                  (let [target-row (inc row)
+                        new-caret (row-col->caret txt target-row col)]
+                    (Ui/SetCaretIndex editor new-caret)
+                    (refresh-ui!)
+                    true))
 
                 (or (= key "K") (= key "Up"))
                 (let [target-row (max 1 (dec row))
@@ -890,14 +1158,14 @@
                 (= key "W")
                 (let [new-caret (next-word-pos txt caret)]
                   (Ui/SetCaretIndex editor new-caret)
-                  (refresh-ui!)
-                  true)
+                  (refresh-ui!))
+                true
 
                 (= key "B")
                 (let [new-caret (prev-word-pos txt caret)]
                   (Ui/SetCaretIndex editor new-caret)
-                  (refresh-ui!)
-                  true)
+                  (refresh-ui!))
+                true
 
                 ;; Line start / end: 0, $
                 (= key "D0")
@@ -943,7 +1211,55 @@
                   true)
 
                 ;; Delete / Yank line: dd / yy
-                (= key "D")
+                ;; Shift+D (D): Delete to end of line!
+                (and (= key "D") shift?)
+                (let [{:keys [text caret yanked]} (delete-to-end-of-line txt caret)]
+                  (Ui/SetClipboardText cb yanked)
+                  (swap! state-atom assoc :text text :yank-buffer yanked :dirty? true :message (str "Deleted: " (pr-str yanked)))
+                  (.set_Text editor text)
+                  (Ui/SetCaretIndex editor caret)
+                  (refresh-ui!)
+                  true)
+
+                ;; Shift+Y (Y): Yank to end of line!
+                (and (= key "Y") shift?)
+                (let [yanked (yank-to-end-of-line txt caret)]
+                  (Ui/SetClipboardText cb yanked)
+                  (swap! state-atom assoc :yank-buffer yanked :message (str "Yanked: " (pr-str yanked)))
+                  (refresh-ui!)
+                  true)
+
+                ;; Shift+C (C): Change to end of line!
+                (and (= key "C") shift?)
+                (let [{:keys [text caret yanked]} (delete-to-end-of-line txt caret)]
+                  (Ui/SetClipboardText cb yanked)
+                  (swap! state-atom assoc :text text :yank-buffer yanked :dirty? true :mode :insert :message "-- INSERT --")
+                  (.set_Text editor text)
+                  (Ui/SetCaretIndex editor caret)
+                  (refresh-ui!)
+                  true)
+
+                ;; Shift+S (S): Change whole line!
+                (and (= key "S") shift?)
+                (let [{:keys [text caret yanked]} (delete-current-line txt caret)]
+                  (Ui/SetClipboardText cb yanked)
+                  (swap! state-atom assoc :text text :yank-buffer yanked :dirty? true :mode :insert :message "-- INSERT --")
+                  (.set_Text editor text)
+                  (Ui/SetCaretIndex editor caret)
+                  (refresh-ui!)
+                  true)
+
+                ;; s: Substitute character!
+                (and (= key "S") (not shift?))
+                (let [{:keys [text caret]} (delete-char-at-caret txt caret)]
+                  (swap! state-atom assoc :text text :dirty? true :mode :insert :message "-- INSERT --")
+                  (.set_Text editor text)
+                  (Ui/SetCaretIndex editor caret)
+                  (refresh-ui!)
+                  true)
+
+                ;; dd (delete line)
+                (and (= key "D") (not shift?))
                 (if (= (:last-normal-key st) "D")
                   (let [{:keys [text caret yanked]} (delete-current-line txt caret)]
                     (Ui/SetClipboardText cb yanked)
@@ -956,7 +1272,8 @@
                     (swap! state-atom assoc :last-normal-key "D")
                     true))
 
-                (= key "Y")
+                ;; yy (yank line)
+                (and (= key "Y") (not shift?))
                 (if (= (:last-normal-key st) "Y")
                   (let [yanked (yank-current-line txt caret)]
                     (Ui/SetClipboardText cb yanked)
